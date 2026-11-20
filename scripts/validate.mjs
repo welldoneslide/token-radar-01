@@ -59,12 +59,12 @@ const modelSrc = readFileSync('lib/model.ts', 'utf8');
 const wlNames = snap.watchlist.map((s) => s);
 const hardcoded = wlNames.filter((s) => modelSrc.includes(`'${s}'`) || modelSrc.includes(`"${s}"`));
 check('no watchlist slug hardcoded in lib/model.ts', hardcoded.length === 0, hardcoded.join(', ') || 'none');
-check('model version is radar-4', modelSrc.includes(`MODEL_VERSION = 'radar-4'`));
+check('model version is radar-5', modelSrc.includes(`MODEL_VERSION = 'radar-5'`));
 check('no row rests its multiple on <5 comparators',
   rows.every((r) => (r.model.multiple_source === 'size' && r.model.multiple_n === 128) || (r.model.multiple_source === 'family' && r.model.multiple_n >= 5)),
   `${rows.filter((r) => r.model.multiple_source === 'family').length} family rows, ${rows.filter((r) => r.model.multiple_source === 'size').length} size-curve rows`);
 
-// --- radar-4 fields: odds, ranges, if-it-launches, verdicts ---
+// --- radar-5 fields: odds, ranges, if-it-launches, verdicts ---
 let badOdds = [];
 for (const r of rows) {
   if (typeof r.token_odds !== 'number' || r.token_odds < 0 || r.token_odds > 1) badOdds.push(`${r.slug}: odds ${r.token_odds}`);
@@ -86,7 +86,7 @@ for (const r of rows) {
   if (!d || d.implied_value_usd !== r.implied_value_usd || d.rank !== r.rank) mismatch++;
 }
 check('data.js rows match board.json (rank + implied)', mismatch === 0, mismatch ? `${mismatch} mismatches` : `${rows.length} rows`);
-check('data.js model version is radar-4', radar.model_version === 'radar-4', radar.model_version);
+check('data.js model version is radar-5', radar.model_version === 'radar-5', radar.model_version);
 // recompute implied from the fitted parameters the way dashboard/app.js does
 function impliedOf(row, radar) {
   const sc = radar.size_curve;
@@ -136,14 +136,38 @@ const acctTotal = radar.accounting.reduce((a, g) => a + g.count, 0);
 check('protocol accounting sums to 758', acctTotal === 758 && acctTotal === snap.protocols.length, `${acctTotal} = ${radar.accounting.map((g) => `${g.label} ${g.count}`).join(' + ')}`);
 const valueKept = radar.value_terms.filter((t) => t.kept).map((t) => t.term);
 const oddsKept = radar.odds_terms.filter((t) => t.kept).map((t) => t.term);
-check('held-out table keeps exactly size curve + family offsets (value) and age + ln TVL (odds)',
-  valueKept.length === 2 && valueKept.includes('+ size curve, ln TVL') && valueKept.includes('+ family offsets') && oddsKept.length === 1 && oddsKept[0] === 'Age + ln TVL',
+check('held-out table keeps exactly size curve + staking offset (value) and age + ln TVL (odds)',
+  valueKept.length === 2 && valueKept.includes('+ size curve, ln TVL') && valueKept.includes('+ staking offset') && oddsKept.length === 1 && oddsKept[0] === 'Age + ln TVL',
   `value kept: ${valueKept.join('; ')}; odds kept: ${oddsKept.join('; ')}`);
 const oddsKeptRow = radar.odds_terms.find((t) => t.kept);
-check('odds KPI matches the held-out table', oddsKeptRow && radar.odds.brier_loo === oddsKeptRow.loo_miss && radar.odds.brier_wf === oddsKeptRow.wf_miss && radar.odds.brier_wf_med === oddsKeptRow.wf2_miss, `brier LOO ${radar.odds.brier_loo}, WF ${radar.odds.brier_wf}/${radar.odds.brier_wf_med}`);
-const familyTerm = radar.value_terms.find((t) => t.term === '+ family offsets');
+check('odds KPI matches the held-out table', oddsKeptRow && radar.odds.brier_loo === oddsKeptRow.loo_miss && radar.odds.brier_wf === oddsKeptRow.wf_miss && radar.odds.brier_wf_med === oddsKeptRow.wf2_miss && radar.odds.brier_wf3 === oddsKeptRow.wf3_miss, `brier LOO ${radar.odds.brier_loo}, WF ${radar.odds.brier_wf}/${radar.odds.brier_wf_med}/${radar.odds.brier_wf3}`);
+const sizeTerm = radar.value_terms.find((t) => t.term === '+ size curve, ln TVL');
+const stakingTerm = radar.value_terms.find((t) => t.term === '+ staking offset');
+const curatorTerm = radar.value_terms.find((t) => t.term === '+ curator offset');
+check('staking offset never worsens a held-out test vs the size curve alone',
+  stakingTerm && stakingTerm.loo_miss <= sizeTerm.loo_miss && stakingTerm.wf_miss <= sizeTerm.wf_miss && stakingTerm.wf2_miss <= sizeTerm.wf2_miss && stakingTerm.wf3_miss <= sizeTerm.wf3_miss,
+  `staking LOO ${stakingTerm?.loo_miss} / WF ${stakingTerm?.wf_miss} / ${stakingTerm?.wf2_miss} / ${stakingTerm?.wf3_miss} vs size ${sizeTerm?.loo_miss} / ${sizeTerm?.wf_miss} / ${sizeTerm?.wf2_miss} / ${sizeTerm?.wf3_miss}`);
+check('curator offset is dropped and worsens leave-one-out vs the size curve alone',
+  curatorTerm && !curatorTerm.kept && curatorTerm.loo_miss > sizeTerm.loo_miss,
+  `curator LOO ${curatorTerm?.loo_miss} vs size ${sizeTerm?.loo_miss}`);
+check('every held-out term carries the third walk-forward cut',
+  radar.value_terms.every((t) => t.wf3_cut === '2024-08-01' && typeof t.wf3_miss === 'number') && radar.odds_terms.every((t) => t.wf3_cut === '2024-08-01' && typeof t.wf3_miss === 'number'),
+  `value terms: ${radar.value_terms.length}, odds terms: ${radar.odds_terms.length}`);
+check('permutation check is 200 shuffles with sane p-values and staking beating curator',
+  radar.permutation && radar.permutation.shuffles === 200 && radar.permutation.staking.p_value >= 0 && radar.permutation.staking.p_value <= 1 && radar.permutation.curator.p_value >= 0 && radar.permutation.curator.p_value <= 1 && radar.permutation.staking.p_value < radar.permutation.curator.p_value,
+  `staking p=${radar.permutation?.staking.p_value}, curator p=${radar.permutation?.curator.p_value}`);
+check('family offsets hold exactly the staking offset, negative, n>=5',
+  radar.family_offsets.length === 1 && radar.family_offsets[0].family === 'staking' && radar.family_offsets[0].offset < 0 && radar.family_offsets[0].n >= 5,
+  radar.family_offsets.map((f) => `${f.family} offset ${f.offset.toFixed(4)} n=${f.n}`).join(', '));
+check('board has staking-offset rows and size-curve rows',
+  rows.some((r) => r.model.multiple_source === 'family' && r.model.multiple_family === 'staking') && rows.some((r) => r.model.multiple_source === 'size'),
+  `${rows.filter((r) => r.model.multiple_source === 'family').length} family rows, ${rows.filter((r) => r.model.multiple_source === 'size').length} size-curve rows`);
+const bestRow = rows.reduce((a, b) => (b.verdict.net_per_hour_usd > a.verdict.net_per_hour_usd ? b : a), rows[0]);
+check('best_farm is the board\'s best net-per-hour row',
+  radar.best_farm && radar.best_farm.slug === bestRow.slug && radar.best_farm.name === bestRow.name && Math.abs(radar.best_farm.net_per_hour_usd - bestRow.verdict.net_per_hour_usd) < 1e-9 && radar.best_farm.verdict === bestRow.verdict.verdict,
+  `best ${radar.best_farm?.slug} $${radar.best_farm?.net_per_hour_usd}/h (${radar.best_farm?.verdict})`);
+const familyTerm = radar.value_terms.find((t) => t.term === '+ staking offset');
 check('range calibration covers ~50% held out', Math.abs(radar.range.coverage_loo - radar.range.stated_coverage) < 0.05, `coverage ${radar.range.coverage_loo} vs stated ${radar.range.stated_coverage}`);
-check('family term beats flat in all three tests', familyTerm && familyTerm.loo_miss < radar.value_terms[0].loo_miss && familyTerm.wf_miss < radar.value_terms[0].wf_miss && familyTerm.wf2_miss < radar.value_terms[0].wf2_miss, `family LOO ${familyTerm?.loo_miss} / WF ${familyTerm?.wf_miss} / ${familyTerm?.wf2_miss} vs flat ${radar.value_terms[0].loo_miss} / ${radar.value_terms[0].wf_miss} / ${radar.value_terms[0].wf2_miss}`);
 
 // --- dashboard: size + no network ---
 const dashFiles = readdirSync(join(outDir, 'dashboard')).filter((f) => statSync(join(outDir, 'dashboard', f)).isFile());

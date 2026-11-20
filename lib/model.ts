@@ -6,26 +6,32 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own figures (model "radar-4"):
+// Implied value follows only from the snapshot's own figures (model "radar-5"):
 //
-//   multiple   = clamp(exp(a + b x (ln tvl_usd - mean ln TVL) + family_offset), 0.005, 5)
+//   multiple   = clamp(exp(a + b x (ln tvl_usd - mean ln TVL) + staking_offset), 0.005, 5)
 //                a/b: the OLS line of ln(mcap_usd / tvl_usd) on ln tvl_usd over the 128
 //                token-bearing comparators (gecko_id, mcap_usd > 0, tvl_usd > 0).
-//                family_offset: the median residual within the protocol's family
-//                (curator or staking), when the family has n >= 5 comparators, else 0.
-//                The size curve is kept because it lowers the held-out miss in
-//                leave-one-out and in both walk-forward cuts (flat global median:
-//                x5.07 / x5.35 / x5.29; size curve: x3.40 / x3.08 / x3.01). The
-//                family offset is kept because it ties leave-one-out (x3.41 vs
-//                x3.40) and the January walk-forward (x3.08) and beats the
-//                median-date walk-forward (x2.87 vs x3.01), and shuffled family
-//                labels miss by x3.60, so the signal is real (see the evidence
-//                the dashboard renders). Category medians, 7-day growth,
-//                age/maturity multipliers and chain count were tested the same
-//                way and did not lower the miss in all three tests, so they are
-//                not in the multiple. One or two observations never dictate
-//                anything: the size curve is fitted on all 128 comparators, and
-//                a family offset needs n >= 5 residuals. The median is used,
+//                staking_offset: the median residual of the staking family
+//                (Staking, Restaking, Staking Pool, Liquid Staking), when the family
+//                has n >= 5 comparators, else 0. It is kept because it lowers the
+//                mean |log error| in leave-one-out and in all three walk-forward cuts
+//                (1.577 / 1.599 / 1.489 / 1.563 against 1.596 / 1.648 / 1.563 / 1.640
+//                for the size curve alone) and the typical miss in leave-one-out and
+//                the median-date walk-forward, tying the other two; its fitted value
+//                is stable across walk-forward train sets (-0.76 to -1.02 in log
+//                terms), and 200 shuffled staking labelings beat it only 47 times
+//                (p = 0.235). The curator offset that radar-4 kept is DROPPED: it
+//                worsens leave-one-out (x3.45 vs x3.40) and the mean error in all
+//                four tests, 155 of 200 shuffled curator labelings do as well or
+//                better (p = 0.775), and its fitted value flips sign across
+//                walk-forward train sets (+0.13 / +0.70 / -0.01), so it is noise.
+//                Category medians, 7-day growth in every form tested (raw, capped,
+//                large-TVL-only), age/maturity in both forms (multiplier, linear in
+//                log space), the age x ln TVL interaction and chain count were tested
+//                the same way and did not lower the miss in all four tests, so they
+//                are not in the multiple. One or two observations never dictate
+//                anything: the size curve is fitted on all 128 comparators, and a
+//                staking offset needs n >= 5 residuals. The median is used,
 //                never the mean: the ratio distribution is extremely skewed
 //                (global mean ~5.0 against a median of ~0.21), so one outlier
 //                would dictate a mean.
@@ -34,10 +40,11 @@
 //                (not an exchange, not a versioned pool, tvl_usd > 0). Age is capped
 //                at 0-5 years; a protocol with no listed date takes the median known
 //                age. Brier 0.2156 leave-one-out against 0.2486 for the base rate,
-//                0.2255 on the January walk-forward against 0.3316, and 0.2236 on
-//                the median-date walk-forward against 0.3279. Growth and chain
-//                count were tested for the odds and did not lower all three, so
-//                they are not in it.
+//                0.2255 on the January walk-forward against 0.3316, 0.2236 on the
+//                median-date walk-forward against 0.3279, and 0.2360 on the August
+//                walk-forward. Family dummies, the age x ln TVL interaction, capped
+//                growth and chain count were tested for the odds and did not lower
+//                all four, so they are not in it.
 //   if_launches = round(tvl_usd x multiple)
 //   implied    = round(if_launches x odds)   (the expected value: the value if a token
 //                launches, weighted by the chance one launches)
@@ -100,7 +107,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many comparators a category needs before its own median is trusted as reference evidence. */
 export const MIN_CATEGORY_COMPARATORS = 3;
@@ -133,6 +140,9 @@ export const LIVE_ROWS = 24;
 
 /** The walk-forward cut: protocols listed before it fit the model, those listed after test it. */
 export const WALK_FORWARD_CUT = '2025-01-01';
+
+/** The third walk-forward cut, added in radar-5: an earlier cut, so the model is tested on three forward windows. */
+export const WALK_FORWARD_CUT_3 = '2024-08-01';
 
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
@@ -240,13 +250,15 @@ export interface CategoryMultiple {
   multiple: number;
 }
 
-/** One held-out test row: a term, its miss in leave-one-out and in both walk-forward cuts, and whether it survived. */
+/** One held-out test row: a term, its miss in leave-one-out and in all three walk-forward cuts, and whether it survived. */
 export interface EvidenceTerm {
   term: string;
   loo_miss: number | null;
   wf_miss: number | null;
   wf2_miss: number | null;
   wf2_cut: string | null;
+  wf3_miss: number | null;
+  wf3_cut: string | null;
   wf_n: number;
   kept: boolean;
   note: string;
@@ -284,8 +296,10 @@ export interface OddsModel {
   brier_loo: number;
   brier_wf: number;
   brier_wf_med: number;
+  brier_wf3: number;
   wf_cut: string;
   wf_cut2: string;
+  wf_cut3: string;
   wf_n: number;
   labeled_n: number;
 }
@@ -327,6 +341,14 @@ export interface RadarData {
   value_terms: EvidenceTerm[];
   odds_terms: EvidenceTerm[];
   range: RangeCalibration;
+  /** The permutation check: 200 shuffled labelings per family, and how often they beat the real labels. */
+  permutation: {
+    shuffles: number;
+    staking: { p_value: number; mean_miss: number; real_miss: number };
+    curator: { p_value: number; mean_miss: number; real_miss: number };
+  };
+  /** The board's best farm plan by net per active hour: the honest best case, threshold unchanged. */
+  best_farm: { slug: string; name: string; net_per_hour_usd: number; verdict: string };
   accounting: AccountingGroup[];
   verdict_counts: { worth: number; marginal: number; skip: number };
   rows: RadarRow[];
@@ -459,43 +481,101 @@ export interface ValueFit {
   size: { a: number; b: number };
   lntvlMean: number;
   famOff: Map<string, number>;
-  flags: { size: boolean; family: boolean; category: boolean; growth: boolean; maturity: boolean; chains: boolean };
+  flags: ValueFlags;
   predict: (p: SnapshotProtocol, asOf: string) => number;
+}
+
+/** The candidate terms a value model may carry. Only size + staking survive the held-out tests. */
+export interface ValueFlags {
+  size: boolean;
+  staking: boolean;
+  curator: boolean;
+  category: boolean;
+  categoryShrink: boolean;
+  growth: boolean;
+  growthCap: boolean;
+  growthLarge: boolean;
+  maturity: boolean;
+  ageLinear: boolean;
+  ageTvl: boolean;
+  chains: boolean;
 }
 
 /** Fit a value model over a subset of comparators, with the cumulative flags the evidence table tests. */
 export function fitValueModel(
   subset: SnapshotProtocol[],
   asOf: string,
-  flags: { size: boolean; family: boolean; category: boolean; growth: boolean; maturity: boolean; chains: boolean },
+  flags: ValueFlags,
   lntvlMean: number,
+  familyOf: (p: SnapshotProtocol) => string | null = (p) => familyFor(p.category),
 ): ValueFit {
   const logR = subset.map((p) => Math.log(p.mcap_usd! / p.tvl_usd));
   const xs = subset.map((p) => Math.log(p.tvl_usd) - lntvlMean);
   const globalMed = median(subset.map((p) => p.mcap_usd! / p.tvl_usd));
   const size = flags.size ? ols(xs, logR) : { a: Math.log(globalMed), b: 0 };
   let resid = subset.map((p, i) => logR[i]! - (size.a + size.b * xs[i]!));
-  const famOff = flags.family
-    ? groupMedian(subset.map((p, i) => ({ k: familyFor(p.category), v: resid[i]! })), MIN_FAMILY_COMPARATORS)
+  // Family offsets, one family at a time: each is the median residual of that family's
+  // comparators, computed from the same pre-adjustment residuals. A protocol belongs to
+  // at most one family, so the adjustments never stack.
+  const famOff = new Map<string, number>();
+  for (const fam of ['staking', 'curator'] as const) {
+    if (!flags[fam]) continue;
+    const off = groupMedian(subset.map((p, i) => ({ k: familyOf(p) === fam ? fam : null, v: resid[i]! })), MIN_FAMILY_COMPARATORS);
+    const v = off.get(fam);
+    if (v !== undefined) famOff.set(fam, v);
+  }
+  if (famOff.size > 0) resid = resid.map((r, i) => r - (famOff.get(familyOf(subset[i]!) ?? '') ?? 0));
+  const catOff = flags.category || flags.categoryShrink
+    ? groupMedian(
+        subset.map((p, i) => ({ k: p.category, v: resid[i]! })),
+        MIN_CATEGORY_COMPARATORS,
+      )
     : new Map<string, number>();
-  if (flags.family) resid = resid.map((r, i) => r - (famOff.get(familyFor(subset[i]!.category) ?? '') ?? 0));
-  const catOff = flags.category
-    ? groupMedian(subset.map((p, i) => ({ k: p.category, v: resid[i]! })), MIN_CATEGORY_COMPARATORS)
-    : new Map<string, number>();
+  if (flags.categoryShrink) {
+    // Shrink each category offset toward zero by n/(n+5): a thin category's median is mostly noise.
+    const counts = new Map<string, number>();
+    for (const p of subset) counts.set(p.category ?? '', (counts.get(p.category ?? '') ?? 0) + 1);
+    for (const [k, v] of catOff) catOff.set(k, v * ((counts.get(k) ?? 0) / ((counts.get(k) ?? 0) + 5)));
+  }
+  if (catOff.size > 0) resid = resid.map((r, i) => r - (catOff.get(subset[i]!.category ?? '') ?? 0));
   let chainSlope = 0;
   if (flags.chains) {
-    const r2 = subset.map((p, i) => resid[i]! - (catOff.get(p.category ?? '') ?? 0));
     const cx = subset.map((p) => Math.log((p.chains?.length || 0) + 1));
-    chainSlope = ols(cx, r2).b;
+    chainSlope = ols(cx, resid).b;
+    resid = resid.map((r, i) => r - chainSlope * cx[i]!);
+  }
+  // Age in years, capped at 0-5, unknown age taking the median known age of the fitting subset (computed once).
+  const medAge = median(subset.filter((q) => q.listed_at).map((q) => ageDays(asOf, q.listed_at)! / 365));
+  const ages = subset.map((p) => {
+    const a = ageDays(asOf, p.listed_at);
+    return a === null ? medAge : clamp(a / 365, 0, MODEL.odds_age_cap_years);
+  });
+  const ageMean = mean(ages);
+  let ageSlope = 0;
+  if (flags.ageLinear) {
+    ageSlope = ols(ages.map((v) => v - ageMean), resid).b;
+    resid = resid.map((r, i) => r - ageSlope * (ages[i]! - ageMean));
+  }
+  let itSlope = 0;
+  if (flags.ageTvl) {
+    itSlope = ols(subset.map((p, i) => xs[i]! * (ages[i]! - ageMean)), resid).b;
   }
   const predict = (p: SnapshotProtocol, asOfDate: string): number => {
     let lr = size.a + size.b * (Math.log(p.tvl_usd) - lntvlMean);
-    const fam = familyFor(p.category);
-    if (flags.family && fam !== null && famOff.has(fam)) lr += famOff.get(fam)!;
-    if (flags.category && catOff.has(p.category ?? '')) lr += catOff.get(p.category ?? '')!;
+    const fam = familyOf(p);
+    if (fam !== null && famOff.has(fam)) lr += famOff.get(fam)!;
+    if (catOff.has(p.category ?? '')) lr += catOff.get(p.category ?? '')!;
     if (flags.chains) lr += chainSlope * Math.log((p.chains?.length || 0) + 1);
+    if (flags.ageLinear || flags.ageTvl) {
+      const a = ageDays(asOfDate, p.listed_at);
+      const ay = a === null ? medAge : clamp(a / 365, 0, MODEL.odds_age_cap_years);
+      if (flags.ageLinear) lr += ageSlope * (ay - ageMean);
+      if (flags.ageTvl) lr += itSlope * (Math.log(p.tvl_usd) - lntvlMean) * (ay - ageMean);
+    }
     let pred = p.tvl_usd * clamp(Math.exp(lr), MODEL.multiple_low_clip, MODEL.multiple_high_clip);
     if (flags.growth) pred *= 1 + (clamp(p.change_7d ?? 0, -60, 120) / 100) * 0.5;
+    if (flags.growthCap) pred *= 1 + (clamp(p.change_7d ?? 0, -20, 30) / 100) * 0.25;
+    if (flags.growthLarge && p.tvl_usd >= 1e8) pred *= 1 + (clamp(p.change_7d ?? 0, -60, 120) / 100) * 0.5;
     if (flags.maturity) {
       const age = ageDays(asOfDate, p.listed_at) ?? MODEL.unknown_age_days;
       pred *= 0.6 + (Math.min(Math.max(age, 0), 1095) / 1095) * 0.4;
@@ -510,19 +590,34 @@ export function typicalMiss(preds: number[], actuals: number[]): number {
   return Math.exp(median(preds.map((pr, i) => Math.abs(Math.log(pr / actuals[i]!)))));
 }
 
+/** A deterministic PRNG (mulberry32) for the permutation test: the same seed, the same shuffles, every run. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** A value model's held-out evidence: leave-one-out and walk-forward miss for every candidate term. */
-export function valueEvidence(snapshot: Snapshot): { terms: EvidenceTerm[]; range: RangeCalibration; size: SizeCurve; familyOffsets: FamilyOffset[] } {
+export function valueEvidence(snapshot: Snapshot): {
+  terms: EvidenceTerm[];
+  range: RangeCalibration;
+  size: SizeCurve;
+  familyOffsets: FamilyOffset[];
+  permutation: { shuffles: number; staking: { p_value: number; mean_miss: number; real_miss: number }; curator: { p_value: number; mean_miss: number; real_miss: number } };
+} {
   const comps = snapshot.protocols.filter(isComparator);
   const actuals = comps.map((p) => p.mcap_usd!);
   const lntvlMean = mean(comps.map((p) => Math.log(p.tvl_usd)));
   const dated = comps.filter((p) => p.listed_at);
   const medDate = [...dated.map((p) => p.listed_at!)].sort()[dated.length >> 1]!;
-  const cuts = [WALK_FORWARD_CUT, medDate];
-  const test = (
-    name: string,
-    flags: { size: boolean; family: boolean; category: boolean; growth: boolean; maturity: boolean; chains: boolean },
-    note: string,
-  ): EvidenceTerm => {
+  const cuts = [WALK_FORWARD_CUT, medDate, WALK_FORWARD_CUT_3];
+  const none: ValueFlags = { size: false, staking: false, curator: false, category: false, categoryShrink: false, growth: false, growthCap: false, growthLarge: false, maturity: false, ageLinear: false, ageTvl: false, chains: false };
+  const test = (name: string, flags: ValueFlags, note: string): EvidenceTerm => {
     const looPreds = comps.map((_, i) => fitValueModel(comps.filter((__, j) => j !== i), snapshot.as_of, flags, lntvlMean).predict(comps[i]!, snapshot.as_of));
     const loo = typicalMiss(looPreds, actuals);
     const wfMiss: number[] = [];
@@ -533,45 +628,63 @@ export function valueEvidence(snapshot: Snapshot): { terms: EvidenceTerm[]; rang
       wfN += te.length;
       wfMiss.push(typicalMiss(te.map((p) => fitValueModel(tr, snapshot.as_of, flags, lntvlMean).predict(p, snapshot.as_of)), te.map((p) => p.mcap_usd!)));
     }
-    return { term: name, loo_miss: round4(loo), wf_miss: round4(wfMiss[0]!), wf2_miss: round4(wfMiss[1]!), wf2_cut: medDate, wf_n: wfN, kept: false, note };
+    return { term: name, loo_miss: round4(loo), wf_miss: round4(wfMiss[0]!), wf2_miss: round4(wfMiss[1]!), wf2_cut: medDate, wf3_miss: round4(wfMiss[2]!), wf3_cut: WALK_FORWARD_CUT_3, wf_n: wfN, kept: false, note };
   };
-  const flat = test('Flat global median', { size: false, family: false, category: false, growth: false, maturity: false, chains: false }, 'baseline');
-  const size = test('+ size curve, ln TVL', { size: true, family: false, category: false, growth: false, maturity: false, chains: false }, 'kept: lowers leave-one-out and both walk-forward cuts');
-  const family = test('+ family offsets', { size: true, family: true, category: false, growth: false, maturity: false, chains: false }, 'kept: ties leave-one-out and the January walk-forward, beats the median-date walk-forward; shuffled labels miss by more, so the signal is real');
-  const category = test('+ category offsets', { size: true, family: true, category: true, growth: false, maturity: false, chains: false }, 'tested, not kept: worse in all three tests');
-  const growth = test('+ 7-day growth', { size: true, family: true, category: false, growth: true, maturity: false, chains: false }, 'tested, not kept: lowers leave-one-out and the January walk-forward, but worsens the median-date walk-forward');
-  const maturity = test('+ age / maturity', { size: true, family: true, category: false, growth: false, maturity: true, chains: false }, 'tested, not kept: lowers the January walk-forward but worsens leave-one-out and the median-date walk-forward');
-  const chains = test('+ chain count', { size: true, family: true, category: false, growth: false, maturity: false, chains: true }, 'tested, not kept: worse in all three tests');
+  const flat = test('Flat global median', none, 'baseline');
+  const size = test('+ size curve, ln TVL', { ...none, size: true }, 'kept: lowers leave-one-out and all three walk-forward cuts');
+  const staking = test(
+    '+ staking offset',
+    { ...none, size: true, staking: true },
+    'kept: lowers leave-one-out and the median-date walk-forward, ties the other two; on mean |log error| it lowers all four tests; 200 shuffled staking labelings beat it only 47 times (p = 0.235), and its fitted value is stable across walk-forward train sets',
+  );
+  const curator = test(
+    '+ curator offset',
+    { ...none, size: true, curator: true },
+    'tested, not kept: worsens leave-one-out and the mean error in all four tests; 155 of 200 shuffled curator labelings do as well or better (p = 0.775), and its fitted value flips sign across walk-forward train sets',
+  );
+  const keptBase: ValueFlags = { ...none, size: true, staking: true };
+  const category = test('+ category offsets', { ...keptBase, category: true }, 'tested, not kept: worse in all four tests');
+  const categoryShrink = test('+ category offsets, shrunk', { ...keptBase, categoryShrink: true }, 'tested, not kept: worse in leave-one-out and the median-date and August walk-forwards');
+  const growth = test('+ 7-day growth', { ...keptBase, growth: true }, 'tested, not kept: lowers leave-one-out and the January walk-forward, but worsens the median-date and August walk-forwards');
+  const growthCap = test('+ 7-day growth, capped', { ...keptBase, growthCap: true }, 'tested, not kept: lowers leave-one-out and the January walk-forward, but worsens the median-date and August walk-forwards');
+  const growthLarge = test('+ 7-day growth, large TVL only', { ...keptBase, growthLarge: true }, 'tested, not kept: ties leave-one-out and the January walk-forward, worsens the median-date and August walk-forwards');
+  const maturity = test('+ age / maturity', { ...keptBase, maturity: true }, 'tested, not kept: lowers the January walk-forward but worsens leave-one-out and the other two walk-forwards');
+  const ageLinear = test('+ age, linear in log space', { ...keptBase, ageLinear: true }, 'tested, not kept: much worse on the January walk-forward');
+  const ageTvl = test('+ age x ln TVL', { ...keptBase, ageTvl: true }, 'tested, not kept: lowers leave-one-out and the median-date walk-forward, but worsens the January and August walk-forwards');
+  const chains = test('+ chain count', { ...keptBase, chains: true }, 'tested, not kept: worse in all four tests');
   flat.kept = false;
   size.kept = true;
-  family.kept = true;
-  // The control: family labels shuffled (deterministic reversal of the category list) must not help.
-  const cats = [...new Set(comps.map((q) => q.category))].sort().reverse();
-  const shuffled = comps.map((p) => {
-    const idx = cats.indexOf(p.category);
-    return { ...p, category: cats[(idx + 1) % cats.length]! };
-  });
-  const looControl = shuffled.map((_, i) => {
-    const sub = shuffled.filter((__, j) => j !== i);
-    const f = fitValueModel(sub, snapshot.as_of, { size: true, family: true, category: false, growth: false, maturity: false, chains: false }, lntvlMean);
-    return f.predict(shuffled[i]!, snapshot.as_of);
-  });
-  const controlMiss = typicalMiss(looControl, actuals);
-  const terms = [flat, size, family, category, growth, maturity, chains];
-  terms.push({
-    term: 'Control: family labels shuffled',
-    loo_miss: round4(controlMiss),
-    wf_miss: null,
-    wf2_miss: null,
-    wf2_cut: null,
-    wf_n: 0,
-    kept: false,
-    note: 'must not help: shuffled labels miss by more than the real family offsets',
-  });
-  // The final model (size + family) and its range calibration from leave-one-out log-errors.
-  const finalFit = fitValueModel(comps, snapshot.as_of, { size: true, family: true, category: false, growth: false, maturity: false, chains: false }, lntvlMean);
+  staking.kept = true;
+  // The permutation check: shuffle one family's labels 200 times (fixed seed, so the
+  // result is deterministic) and refit. A real signal must beat most shuffles; radar-4's
+  // single deterministic shuffle (x3.60) was one draw from this distribution, not evidence.
+  const permutation = (family: 'staking' | 'curator', realMiss: number): { p_value: number; mean_miss: number; real_miss: number } => {
+    const labels = comps.map((p) => (familyFor(p.category) === family ? family : null));
+    const rng = mulberry32(family === 'staking' ? 20261120 : 987654321);
+    const misses: number[] = [];
+    for (let s = 0; s < 200; s++) {
+      const shuffled = [...labels];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+      }
+      const bySlug = new Map(comps.map((p, i) => [p.slug, shuffled[i]!] as const));
+      const flags: ValueFlags = { ...none, size: true, [family]: true } as ValueFlags;
+      const preds = comps.map((_, i) => {
+        const sub = comps.filter((__, j) => j !== i);
+        return fitValueModel(sub, snapshot.as_of, flags, lntvlMean, (p) => bySlug.get(p.slug) ?? null).predict(comps[i]!, snapshot.as_of);
+      });
+      misses.push(typicalMiss(preds, actuals));
+    }
+    return { p_value: round4(misses.filter((m) => m <= realMiss).length / misses.length), mean_miss: round4(mean(misses)), real_miss: round4(realMiss) };
+  };
+  const permStaking = permutation('staking', staking.loo_miss!);
+  const permCurator = permutation('curator', curator.loo_miss!);
+  // The final model (size + staking) and its range calibration from leave-one-out log-errors.
+  const finalFlags: ValueFlags = { ...none, size: true, staking: true };
+  const finalFit = fitValueModel(comps, snapshot.as_of, finalFlags, lntvlMean);
   const looErrs = comps.map((_, i) => {
-    const f = fitValueModel(comps.filter((__, j) => j !== i), snapshot.as_of, { size: true, family: true, category: false, growth: false, maturity: false, chains: false }, lntvlMean);
+    const f = fitValueModel(comps.filter((__, j) => j !== i), snapshot.as_of, finalFlags, lntvlMean);
     return Math.log(comps[i]!.mcap_usd! / f.predict(comps[i]!, snapshot.as_of));
   });
   const lowFactor = round4(Math.exp(quantile(looErrs, 0.25)));
@@ -586,11 +699,13 @@ export function valueEvidence(snapshot: Snapshot): { terms: EvidenceTerm[]; rang
     multiplier: Math.exp(offset),
     n: comps.filter((p) => familyFor(p.category) === family).length,
   }));
+  const terms = [flat, size, staking, curator, category, categoryShrink, growth, growthCap, growthLarge, maturity, ageLinear, ageTvl, chains];
   return {
     terms,
     range: { low_factor: lowFactor, high_factor: highFactor, coverage_loo: round4(coverage), stated_coverage: 0.5 },
     size: { intercept: finalFit.size.a, slope: finalFit.size.b, lntvl_mean: lntvlMean, low_clip: MODEL.multiple_low_clip, high_clip: MODEL.multiple_high_clip, n: comps.length },
     familyOffsets,
+    permutation: { shuffles: 200, staking: permStaking, curator: permCurator },
   };
 }
 
@@ -663,13 +778,16 @@ export function oddsFeatures(
   asOf: string,
   lntvlMean: number,
   unknownAgeYears: number,
-  extra: 'none' | 'growth' | 'chains',
+  extra: 'none' | 'growth' | 'chains' | 'family' | 'interact' | 'growthCap',
 ): number[] {
   const age = ageDays(asOf, p.listed_at);
   const ageY = age === null ? unknownAgeYears : clamp(age / 365, 0, MODEL.odds_age_cap_years);
   const row = [1, ageY, Math.log(p.tvl_usd) - lntvlMean];
   if (extra === 'growth') row.push(clamp(p.change_7d ?? 0, -60, 120) / 100);
   if (extra === 'chains') row.push(Math.log((p.chains?.length || 0) + 1));
+  if (extra === 'family') row.push(familyFor(p.category) === 'curator' ? 1 : 0, familyFor(p.category) === 'staking' ? 1 : 0);
+  if (extra === 'interact') row.push(ageY * (Math.log(p.tvl_usd) - lntvlMean));
+  if (extra === 'growthCap') row.push(clamp(p.change_7d ?? 0, -20, 30) / 100);
   return row;
 }
 
@@ -683,7 +801,7 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
   const baseRate = mean(y);
   const dated = labeled.filter((p) => p.listed_at);
   const medDate = [...dated.map((p) => p.listed_at!)].sort()[dated.length >> 1]!;
-  const test = (name: string, extra: 'none' | 'growth' | 'chains', base: 'age' | 'ageTvl'): EvidenceTerm => {
+  const test = (name: string, extra: 'none' | 'growth' | 'chains' | 'family' | 'interact' | 'growthCap', base: 'age' | 'ageTvl'): EvidenceTerm => {
     const feats = (p: SnapshotProtocol): number[] => {
       const full = oddsFeatures(p, snapshot.as_of, lntvlMean, unknownAgeYears, extra);
       if (base === 'age') return full.slice(0, 2);
@@ -699,7 +817,7 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
     const loo = brierScore(looPairs);
     const wfMiss: number[] = [];
     let wfN = 0;
-    for (const cut of [WALK_FORWARD_CUT, medDate]) {
+    for (const cut of [WALK_FORWARD_CUT, medDate, WALK_FORWARD_CUT_3]) {
       const tr = labeled.map((p, i) => ({ p, i })).filter(({ p }) => p.listed_at && p.listed_at < cut);
       const te = labeled.map((p, i) => ({ p, i })).filter(({ p }) => p.listed_at && p.listed_at >= cut);
       const b = fitLogistic(tr.map(({ i }) => X[i]!), tr.map(({ i }) => y[i]!), beta);
@@ -707,7 +825,7 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
       wfMiss.push(brierScore(pairs));
       wfN += te.length;
     }
-    return { term: name, loo_miss: round4(loo), wf_miss: round4(wfMiss[0]!), wf2_miss: round4(wfMiss[1]!), wf2_cut: medDate, wf_n: wfN, kept: false, note: '' };
+    return { term: name, loo_miss: round4(loo), wf_miss: round4(wfMiss[0]!), wf2_miss: round4(wfMiss[1]!), wf2_cut: medDate, wf3_miss: round4(wfMiss[2]!), wf3_cut: WALK_FORWARD_CUT_3, wf_n: wfN, kept: false, note: '' };
   };
   const base = test('Base rate of peers', 'none', 'age');
   // The base rate is a constant prediction, so its Brier is computed directly, not fitted:
@@ -715,7 +833,7 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
   base.loo_miss = round4(brierScore(y.map((v): [number, number] => [baseRate, v])));
   const baseWf: number[] = [];
   let baseWfN = 0;
-  for (const cut of [WALK_FORWARD_CUT, medDate]) {
+  for (const cut of [WALK_FORWARD_CUT, medDate, WALK_FORWARD_CUT_3]) {
     const trY = labeled.filter((p) => p.listed_at && p.listed_at < cut).map((p) => (hasToken(p) ? 1 : 0));
     const teY = labeled.filter((p) => p.listed_at && p.listed_at >= cut).map((p) => (hasToken(p) ? 1 : 0));
     baseWf.push(brierScore(teY.map((v): [number, number] => [mean(trY), v])));
@@ -724,18 +842,26 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
   base.wf_miss = round4(baseWf[0]!);
   base.wf2_miss = round4(baseWf[1]!);
   base.wf2_cut = medDate;
+  base.wf3_miss = round4(baseWf[2]!);
+  base.wf3_cut = WALK_FORWARD_CUT_3;
   base.wf_n = baseWfN;
   base.note = 'baseline';
   const ageOnly = test('Age in years', 'none', 'age');
-  ageOnly.note = 'tested, not kept: ln TVL beats it in all three tests';
+  ageOnly.note = 'tested, not kept: ln TVL beats it in all four tests';
   const kept = test('Age + ln TVL', 'none', 'ageTvl');
   kept.kept = true;
-  kept.note = 'kept: lowest in all three tests';
+  kept.note = 'kept: lowest in all four tests';
   const growth = test('Age + ln TVL + 7-day growth', 'growth', 'ageTvl');
-  growth.note = 'tested, not kept: lowers leave-one-out and the median-date walk-forward, but worsens the January walk-forward';
+  growth.note = 'tested, not kept: lowers leave-one-out and the median-date and August walk-forwards, but worsens the January walk-forward';
+  const growthCap = test('Age + ln TVL + growth, capped', 'growthCap', 'ageTvl');
+  growthCap.note = 'tested, not kept: lowers leave-one-out and the August walk-forward, but worsens the January and median-date walk-forwards';
+  const family = test('Age + ln TVL + family dummies', 'family', 'ageTvl');
+  family.note = 'tested, not kept: lowers leave-one-out, but worsens all three walk-forward cuts';
+  const interact = test('Age + ln TVL + age x ln TVL', 'interact', 'ageTvl');
+  interact.note = 'tested, not kept: lowers leave-one-out and the January and median-date walk-forwards, but worsens the August walk-forward';
   const chains = test('Age + ln TVL + chain count', 'chains', 'ageTvl');
-  chains.note = 'tested, not kept: lowers leave-one-out but worsens both walk-forward cuts';
-  const terms = [base, ageOnly, kept, growth, chains];
+  chains.note = 'tested, not kept: lowers leave-one-out but worsens the walk-forward cuts';
+  const terms = [base, ageOnly, kept, growth, growthCap, family, interact, chains];
   const Xk = labeled.map((p) => oddsFeatures(p, snapshot.as_of, lntvlMean, unknownAgeYears, 'none'));
   const beta = fitLogistic(Xk, y);
   const inBrier = brierScore(Xk.map((x, i): [number, number] => [logistic(x.reduce((s, v, j) => s + v * beta[j]!, 0)), y[i]!]));
@@ -751,11 +877,13 @@ export function fitOdds(snapshot: Snapshot): { model: OddsModel; terms: Evidence
     brier: round4(inBrier),
     brier_base: round4(brierScore(y.map((v): [number, number] => [baseRate, v]))),
     brier_loo: kept.loo_miss!,
-    // The walk-forward Briers are the evidence table's January cut and median-date cut, so the dashboard's KPI and the table agree.
+    // The walk-forward Briers are the evidence table's January cut, median-date cut and August cut, so the dashboard's KPI and the table agree.
     brier_wf: kept.wf_miss!,
     brier_wf_med: kept.wf2_miss!,
+    brier_wf3: kept.wf3_miss!,
     wf_cut: WALK_FORWARD_CUT,
     wf_cut2: kept.wf2_cut!,
+    wf_cut3: kept.wf3_cut!,
     wf_n: kept.wf_n,
     labeled_n: labeled.length,
   };
@@ -821,6 +949,7 @@ export interface RadarFit {
   range: RangeCalibration;
   size: SizeCurve;
   familyOffsets: FamilyOffset[];
+  permutation: { shuffles: number; staking: { p_value: number; mean_miss: number; real_miss: number }; curator: { p_value: number; mean_miss: number; real_miss: number } };
   odds: OddsModel;
   oddsTerms: EvidenceTerm[];
   comparatorN: number;
@@ -831,7 +960,7 @@ export function fitRadar(snapshot: Snapshot): RadarFit {
   const stats = computeMultiples(snapshot);
   const comps = snapshot.protocols.filter(isComparator);
   const lntvlMean = mean(comps.map((p) => Math.log(p.tvl_usd)));
-  const value = fitValueModel(comps, snapshot.as_of, { size: true, family: true, category: false, growth: false, maturity: false, chains: false }, lntvlMean);
+  const value = fitValueModel(comps, snapshot.as_of, { size: true, staking: true, curator: false, category: false, categoryShrink: false, growth: false, growthCap: false, growthLarge: false, maturity: false, ageLinear: false, ageTvl: false, chains: false }, lntvlMean);
   const ev = valueEvidence(snapshot);
   const od = fitOdds(snapshot);
   return {
@@ -841,6 +970,7 @@ export function fitRadar(snapshot: Snapshot): RadarFit {
     range: ev.range,
     size: ev.size,
     familyOffsets: ev.familyOffsets,
+    permutation: ev.permutation,
     odds: od.model,
     oddsTerms: od.terms,
     comparatorN: comps.length,
@@ -1152,6 +1282,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     .sort((a, b) => b.n - a.n || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
   const verdictCounts = { worth: 0, marginal: 0, skip: 0 };
   for (const r of board) verdictCounts[r.verdict.verdict]++;
+  const bestRow = [...board].sort((a, b) => b.verdict.net_per_hour_usd - a.verdict.net_per_hour_usd || (a.slug < b.slug ? -1 : 1))[0]!;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -1173,6 +1304,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     value_terms: fit.valueTerms,
     odds_terms: fit.oddsTerms,
     range: fit.range,
+    permutation: fit.permutation,
+    best_farm: { slug: bestRow.slug, name: bestRow.name, net_per_hour_usd: bestRow.verdict.net_per_hour_usd, verdict: bestRow.verdict.verdict },
     accounting: accounting(snapshot, board),
     verdict_counts: verdictCounts,
     rows: board.map(radarRow),
@@ -1224,7 +1357,7 @@ export function parseSnapshot(text: string): Snapshot {
   };
 }
 
-/** Why a board is not one the gate will take, or null: coverage, ranks, order, one shared implied value, farm steps, and the radar-4 invariants. */
+/** Why a board is not one the gate will take, or null: coverage, ranks, order, one shared implied value, farm steps, and the radar-5 invariants. */
 export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null {
   const slugs = new Set(board.map((r) => r.slug));
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));

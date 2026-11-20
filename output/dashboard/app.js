@@ -241,11 +241,12 @@
   }
   function kpiStrip() {
     var flat = termBy(DATA.value_terms, 'Flat global median');
-    var fin = termBy(DATA.value_terms, '+ family offsets');
+    var fin = termBy(DATA.value_terms, '+ staking offset');
     var valueTested = DATA.value_terms.filter(function (t) { return t.term.indexOf('Control') !== 0; });
     var valueKept = valueTested.filter(function (t) { return t.kept; }).length;
     var oddsKept = DATA.odds_terms.filter(function (t) { return t.kept; }).length;
     var vc = DATA.verdict_counts;
+    var best = DATA.best_farm;
     function card(label, value, sub) {
       return el('div', { class: 'kpi-card' }, el('span', { text: label }), el('b', { text: value }), el('span', { class: 'sub', text: sub }));
     }
@@ -253,8 +254,13 @@
       card('Out-of-sample miss, leave-one-out', fin ? fmtMiss(fin.loo_miss) : 'n/a', flat ? 'flat global median ' + fmtMiss(flat.loo_miss) : ''),
       card('Range honesty, held out', Math.round(DATA.range.coverage_loo * 100) + '% in range', 'stated ' + Math.round(DATA.range.stated_coverage * 100) + '% (P25–P75)'),
       card('Token odds Brier, leave-one-out', DATA.odds.brier_loo.toFixed(4), 'base rate ' + DATA.odds.brier_base.toFixed(4)),
-      card('Terms kept', valueKept + ' of ' + valueTested.length + ' value · ' + oddsKept + ' of ' + DATA.odds_terms.length + ' odds', 'only terms that lower all three held-out tests'),
-      card('Worth farming', vc.worth + ' of ' + DATA.board_size, vc.marginal + ' marginal · ' + vc.skip + ' skip'),
+      card('Terms kept', valueKept + ' of ' + valueTested.length + ' value · ' + oddsKept + ' of ' + DATA.odds_terms.length + ' odds', 'only terms that never worsen a held-out test'),
+      el('div', { class: 'kpi-card' },
+        el('span', { text: 'Worth farming' }),
+        el('b', { text: vc.worth + ' of ' + DATA.board_size }),
+        el('span', { class: 'sub', text: vc.marginal + ' marginal · ' + vc.skip + ' skip' }),
+        el('span', { class: 'sub', text: 'best $' + best.net_per_hour_usd.toFixed(2) + '/h — ' + best.name + ' (bar $' + DATA.model.worth_net_per_hour_usd + '/h)' })
+      ),
       card('Watchlist covered', DATA.watchlist_size + ' / ' + DATA.watchlist_size, DATA.board_size + ' rows, ' + DATA.early_size + ' early')
     );
   }
@@ -268,10 +274,12 @@
         el('td', { class: 'num', text: fmtMiss(t.loo_miss) }),
         el('td', { class: 'num', text: fmtMiss(t.wf_miss) }),
         el('td', { class: 'num', text: fmtMiss(t.wf2_miss) }),
+        el('td', { class: 'num', text: fmtMiss(t.wf3_miss) }),
         el('td', null, el('span', { class: 'verdict ' + verdict, text: verdict }))
       ));
     });
     var medCut = terms.filter(function (t) { return t.wf2_cut; })[0];
+    var thirdCut = terms.filter(function (t) { return t.wf3_cut; })[0];
     return el('div', { class: 'evidence-table' },
       el('h3', { text: title }),
       el('div', { class: 'table-wrap' },
@@ -282,6 +290,7 @@
             el('th', { scope: 'col', text: 'Leave-one-out' }),
             el('th', { scope: 'col', text: 'WF ' + DATA.walk_forward_cut }),
             el('th', { scope: 'col', text: 'WF ' + (medCut ? medCut.wf2_cut : 'median date') }),
+            el('th', { scope: 'col', text: 'WF ' + (thirdCut ? thirdCut.wf3_cut : 'third cut') }),
             el('th', { scope: 'col', text: 'Verdict' })
           )),
           body
@@ -291,15 +300,19 @@
   }
 
   function evidenceSection() {
+    var perm = DATA.permutation;
+    var beatStaking = Math.round((1 - perm.staking.p_value) * perm.shuffles);
+    var beatCurator = Math.round((1 - perm.curator.p_value) * perm.shuffles);
     return el('section', { class: 'panel evidence' },
       el('div', { class: 'evidence-head' },
-        el('h2', { text: 'Held-out evidence: every term tested twice' }),
-        el('p', { class: 'sub', text: 'A term is kept only when it lowers the miss in leave-one-out and in both walk-forward cuts. The miss is the typical factor by which a prediction is wrong: exp(median |ln(pred / actual)|). The control shuffles the family labels, so a real family signal must beat it.' })
+        el('h2', { text: 'Held-out evidence: every term tested four ways' }),
+        el('p', { class: 'sub', text: 'A term is kept only when it never worsens the miss in leave-one-out or in any of the three walk-forward cuts. The miss is the typical factor by which a prediction is wrong: exp(median |ln(pred / actual)|). The permutation check shuffles each family label 200 times, so a real family signal must beat most shuffles.' })
       ),
       el('div', { class: 'evidence-grid' },
         evidenceTable('Value: what a token would be worth', DATA.value_terms, 'Fitted on the ' + DATA.size_curve.n + ' token-bearing comparators. Walk-forward fits on protocols listed before the cut and tests on those listed after it.'),
         evidenceTable('Token odds: will it launch one', DATA.odds_terms, 'Fitted on the ' + DATA.odds.labeled_n + ' protocols whose token status is known. Brier score: lower is better, 0 is perfect.')
-      )
+      ),
+      el('p', { class: 'sub', text: 'Permutation check (' + perm.shuffles + ' shuffles): the staking offset beats ' + beatStaking + ' of ' + perm.shuffles + ' random labelings (p = ' + perm.staking.p_value.toFixed(3) + ', shuffled miss ' + fmtMiss(perm.staking.mean_miss) + ' on average, real ' + fmtMiss(perm.staking.real_miss) + '); the curator offset beats ' + beatCurator + ' of ' + perm.shuffles + ' (p = ' + perm.curator.p_value.toFixed(3) + ', shuffled miss ' + fmtMiss(perm.curator.mean_miss) + ', real ' + fmtMiss(perm.curator.real_miss) + ') — a small, stable staking signal and curator noise. Radar-4 kept the curator offset on one deterministic shuffle; 200 shuffles show that draw was luck.' })
     );
   }
 
@@ -385,7 +398,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Implied value is the value if a token launches, weighted by the chance one launches; the range is the P25–P75 band from the value model\u2019s held-out errors. Select a row for its model, its farm verdict and its farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first — the value if a token launches, weighted by the chance one launches. Select a row for its model, farm verdict and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -475,9 +488,9 @@
     });
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked. Each term was tested held out twice (see "Held-out evidence" above); only terms that lower the miss in all three tests are in the model.' }),
+      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked. Each term was tested held out four ways — leave-one-out and three walk-forward cuts (see "Held-out evidence" above); only terms that never worsen the miss in any test are in the model.' }),
       el('div', { class: 'formula' },
-        'multiple = clamp( exp( ' + sc.intercept.toFixed(4) + ' + ' + sc.slope.toFixed(4) + ' x (ln tvl_usd - ' + sc.lntvl_mean.toFixed(4) + ') + family offset ), ' + sc.low_clip + ', ' + sc.high_clip + ' )',
+        'multiple = clamp( exp( ' + sc.intercept.toFixed(4) + ' + ' + sc.slope.toFixed(4) + ' x (ln tvl_usd - ' + sc.lntvl_mean.toFixed(4) + ') + staking offset ), ' + sc.low_clip + ', ' + sc.high_clip + ' )',
         el('br'),
         'if it launches = round( tvl_usd x multiple )',
         el('br'),
@@ -487,17 +500,17 @@
         el('br'),
         'range = [ implied x ' + DATA.range.low_factor.toFixed(4) + ', implied x ' + DATA.range.high_factor.toFixed(4) + ' ]'
       ),
-      el('p', { class: 'sub', text: 'The multiple is a size curve fitted on all ' + sc.n + ' token-bearing comparators: ln(market-cap / TVL) on ln TVL, intercept ' + sc.intercept.toFixed(4) + ', slope ' + sc.slope.toFixed(4) + '. Larger protocols carry lower multiples, and the curve says so by ' + Math.abs(sc.slope).toFixed(2) + ' in log terms per unit of ln TVL. The family offset is the median residual of the protocol\u2019s family, used only when the family has at least 5 comparators; a thin category never gets its own multiple, because one or two observations is an anecdote, not an estimate. The category medians below are reference evidence only — the fitted multiple does not use them. The median is used, never the mean: the ratio distribution is extremely skewed (global mean about 5.0 against a median of ' + DATA.global_multiple.toFixed(4) + '), so a mean would let one outlier dictate a whole rank.' }),
+      el('p', { class: 'sub', text: 'The multiple is a size curve fitted on all ' + sc.n + ' token-bearing comparators: ln(market-cap / TVL) on ln TVL, intercept ' + sc.intercept.toFixed(4) + ', slope ' + sc.slope.toFixed(4) + '. Larger protocols carry lower multiples, and the curve says so by ' + Math.abs(sc.slope).toFixed(2) + ' in log terms per unit of ln TVL. The staking offset is the median residual of the staking family\u2019s comparators, used only when the family has at least 5 comparators; it lowers the mean |log error| in all four held-out tests and its fitted value is stable across walk-forward train sets, so it stays. The curator offset was tested the same way and dropped: it worsens leave-one-out, 155 of 200 shuffled curator labelings do as well or better (p = ' + DATA.permutation.curator.p_value.toFixed(3) + '), and its fitted value flips sign across train sets. A thin category never gets its own multiple, because one or two observations is an anecdote, not an estimate. The category medians below are reference evidence only — the fitted multiple does not use them. The median is used, never the mean: the ratio distribution is extremely skewed (global mean about 5.0 against a median of ' + DATA.global_multiple.toFixed(4) + '), so a mean would let one outlier dictate a whole rank.' }),
       el('div', { class: 'table-wrap multiples' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Family offsets on the size curve: the median residual of the family\u2019s comparators.' }),
+          el('caption', { class: 'sub', text: 'Staking offset on the size curve: the median residual of the staking family\u2019s comparators. The curator offset was tested and dropped — see "Held-out evidence".' }),
           el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Family' }), el('th', { scope: 'col', text: 'Offset (log)' }), el('th', { scope: 'col', text: 'Multiplier' }), el('th', { scope: 'col', text: 'Comparators (n)' }))),
           el('tbody', null, offsets)
         )
       ),
-      el('p', { class: 'sub', text: 'Token odds are a logistic regression on age in years (capped at ' + m.odds_age_cap_years + ') and ln TVL, fitted on the ' + o.labeled_n + ' protocols whose token status is known (not an exchange, not a versioned pool). A protocol with no listed date takes the median known age of ' + o.unknown_age_years.toFixed(2) + ' years. The base rate of peers is ' + (o.base_rate * 100).toFixed(1) + '%; the model scores Brier ' + o.brier_loo.toFixed(4) + ' leave-one-out against ' + o.brier_base.toFixed(4) + ' for the base rate, ' + o.brier_wf.toFixed(4) + ' on the ' + o.wf_cut + ' walk-forward against ' + termBy(DATA.odds_terms, 'Base rate of peers').wf_miss.toFixed(4) + ', and ' + o.brier_wf_med.toFixed(4) + ' on the ' + o.wf_cut2 + ' walk-forward against ' + termBy(DATA.odds_terms, 'Base rate of peers').wf2_miss.toFixed(4) + '. Seven-day growth and chain count were tested for the odds and did not lower all three, so they are not in it.' }),
+      el('p', { class: 'sub', text: 'Token odds are a logistic regression on age in years (capped at ' + m.odds_age_cap_years + ') and ln TVL, fitted on the ' + o.labeled_n + ' protocols whose token status is known (not an exchange, not a versioned pool). A protocol with no listed date takes the median known age of ' + o.unknown_age_years.toFixed(2) + ' years. The base rate of peers is ' + (o.base_rate * 100).toFixed(1) + '%; the model scores Brier ' + o.brier_loo.toFixed(4) + ' leave-one-out against ' + o.brier_base.toFixed(4) + ' for the base rate, ' + o.brier_wf.toFixed(4) + ' on the ' + o.wf_cut + ' walk-forward against ' + termBy(DATA.odds_terms, 'Base rate of peers').wf_miss.toFixed(4) + ', ' + o.brier_wf_med.toFixed(4) + ' on the ' + o.wf_cut2 + ' walk-forward against ' + termBy(DATA.odds_terms, 'Base rate of peers').wf2_miss.toFixed(4) + ', and ' + o.brier_wf3.toFixed(4) + ' on the ' + o.wf_cut3 + ' walk-forward against ' + termBy(DATA.odds_terms, 'Base rate of peers').wf3_miss.toFixed(4) + '. Family dummies, the age x ln TVL interaction, seven-day growth in both forms and chain count were tested for the odds and did not lower all four, so they are not in it.' }),
       el('p', { class: 'sub', text: 'The range is the P25–P75 band of the value model\u2019s leave-one-out log-errors (actual / predicted): implied x ' + DATA.range.low_factor.toFixed(4) + ' to implied x ' + DATA.range.high_factor.toFixed(4) + '. Held out, the actual value lands inside the printed range ' + Math.round(DATA.range.coverage_loo * 100) + '% of the time, against a stated ' + Math.round(DATA.range.stated_coverage * 100) + '%. The band is wide because the multiple is noisy: a single protocol\u2019s value is uncertain by a factor of several, and the board ranks expected values, not certainties.' }),
-      el('p', { class: 'sub', text: 'The farm verdict is a scenario, not a promise. The expected drop is odds x if-it-launches x (capital / TVL): the farmer\u2019s pro-rata share if the whole launch value went to depositors. Net is the drop less gas; per hour divides by the plan\u2019s active hours. Worth farming needs net per hour of at least $' + m.worth_net_per_hour_usd + '. On this board ' + vc.worth + ' row' + (vc.worth === 1 ? ' is' : 's are') + ' worth farming, ' + vc.marginal + ' marginal and ' + vc.skip + ' skip. A points-based allocation could pay more or nothing, so no verdict promises a reward.' }),
+      el('p', { class: 'sub', text: 'The farm verdict is a scenario, not a promise. The expected drop is odds x if-it-launches x (capital / TVL): the farmer\u2019s pro-rata share if the whole launch value went to depositors. Net is the drop less gas; per hour divides by the plan\u2019s active hours. Worth farming needs net per hour of at least $' + m.worth_net_per_hour_usd + '. On this board ' + vc.worth + ' row' + (vc.worth === 1 ? ' is' : 's are') + ' worth farming, ' + vc.marginal + ' marginal and ' + vc.skip + ' skip. The best plan on this board is ' + DATA.best_farm.name + ' at $' + DATA.best_farm.net_per_hour_usd.toFixed(2) + '/h, still below the $' + m.worth_net_per_hour_usd + '/h bar — the threshold is not lowered to manufacture a winner. A points-based allocation could pay more or nothing, so no verdict promises a reward.' }),
       multiplesTable(),
       el('p', { class: 'sub', text: 'What this model cannot say: the multiple is cross-sectional evidence, not a cause. The snapshot carries no fees, revenue, users or airdrop flag, so TVL is the only size proxy available, and the implied value is a model claim, not a prediction of a launch, a price or a reward. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
     );

@@ -89,11 +89,11 @@ Ganti `<out>` dengan direktori output build (berisi `dashboard/` + `data.js`).
 Dashboard membaca state dari hash URL: `#p=<slug>` membuka detail drawer,
 `#q=<teks>` mencari, `#category=<nama>` memfilter kategori. Argumen ke-5
 `screenshot.mjs` adalah selector CSS yang digulir ke atas viewport sebelum
-foto diambil — dipakai untuk tampilan detail dan filter, karena board-nya
-berada di bawah KPI strip dan tabel bukti, jadi tanpa scroll fotonya hanya
-menunjukkan bagian atas halaman yang sama untuk ketiga tampilan. Ketiga
-perintah di bawah sudah diuji dan menghasilkan render asli (detail drawer
-USDD dan filter kategori Risk Curators terverifikasi 20 Nov 2026, radar-4):
+foto diambil — dipakai untuk tampilan detail dan filter, karena tanpa scroll
+fotonya hanya menunjukkan bagian atas halaman yang sama untuk ketiga
+tampilan. Ketiga perintah di bawah sudah diuji dan menghasilkan render asli
+(detail drawer Steakhouse Financial rank 1 dan filter kategori Risk Curators
+terverifikasi 20 Nov 2026, radar-5):
 
 ```sh
 cd ~/workspace/makefun/token-radar-01
@@ -101,7 +101,7 @@ export CHROME_PATH=$HOME/.cache/ms-playwright/chromium-1255/chrome-linux64/chrom
 OUT=file:///path/ke/<out>/dashboard/index.html
 
 node scripts/screenshot.mjs "$OUT"                       screenshots/1-board.png
-node scripts/screenshot.mjs "$OUT#p=usdd"                screenshots/2-detail.png 1280 800 .controls
+node scripts/screenshot.mjs "$OUT#p=steakhouse-financial" screenshots/2-detail.png 1280 800 .controls
 node scripts/screenshot.mjs "$OUT#category=Risk%20Curators" screenshots/3-filtered.png 1280 800 .controls
 ```
 
