@@ -571,10 +571,10 @@
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(kpiStrip());
-    shell.appendChild(evidenceSection());
-    shell.appendChild(accountingStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
+    shell.appendChild(accountingStrip());
+    shell.appendChild(evidenceSection());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
