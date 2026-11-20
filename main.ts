@@ -2,7 +2,7 @@
 //
 // What this file does, in order:
 //   1. Load the sealed snapshot (default /input/snapshot.json, or --input <file|dir>).
-//   2. Score every protocol with the radar-3 model in lib/model.ts and rank the board.
+//   2. Score every protocol with the radar-4 model in lib/model.ts and rank the board.
 //   3. Refuse to write anything if the board breaks the gate's own rules.
 //   4. Write board.json and data.js, copy dashboard/ and screenshots/ into the output
 //      directory, then write dossier.json last with the vendored make.fun library.

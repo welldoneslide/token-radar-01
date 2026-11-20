@@ -87,9 +87,13 @@ python3 -c "from PIL import Image; im = Image.open('screenshot-proof.png'); prin
 
 Ganti `<out>` dengan direktori output build (berisi `dashboard/` + `data.js`).
 Dashboard membaca state dari hash URL: `#p=<slug>` membuka detail drawer,
-`#q=<teks>` mencari, `#category=<nama>` memfilter kategori. Ketiga perintah
-di bawah sudah diuji dan menghasilkan render asli (detail drawer Steakhouse
-Financial dan filter kategori terverifikasi 19 Nov 2026):
+`#q=<teks>` mencari, `#category=<nama>` memfilter kategori. Argumen ke-5
+`screenshot.mjs` adalah selector CSS yang digulir ke atas viewport sebelum
+foto diambil — dipakai untuk tampilan detail dan filter, karena board-nya
+berada di bawah KPI strip dan tabel bukti, jadi tanpa scroll fotonya hanya
+menunjukkan bagian atas halaman yang sama untuk ketiga tampilan. Ketiga
+perintah di bawah sudah diuji dan menghasilkan render asli (detail drawer
+USDD dan filter kategori Risk Curators terverifikasi 20 Nov 2026, radar-4):
 
 ```sh
 cd ~/workspace/makefun/token-radar-01
@@ -97,8 +101,8 @@ export CHROME_PATH=$HOME/.cache/ms-playwright/chromium-1255/chrome-linux64/chrom
 OUT=file:///path/ke/<out>/dashboard/index.html
 
 node scripts/screenshot.mjs "$OUT"                       screenshots/1-board.png
-node scripts/screenshot.mjs "$OUT#p=<slug-rank-1>"       screenshots/2-detail.png
-node scripts/screenshot.mjs "$OUT#category=<Kategori>"   screenshots/3-filtered.png
+node scripts/screenshot.mjs "$OUT#p=usdd"                screenshots/2-detail.png 1280 800 .controls
+node scripts/screenshot.mjs "$OUT#category=Risk%20Curators" screenshots/3-filtered.png 1280 800 .controls
 ```
 
 Contoh dengan output starter (slug & kategori nyata dari data):
@@ -106,8 +110,8 @@ Contoh dengan output starter (slug & kategori nyata dari data):
 ```sh
 OUT=file:///tmp/radar-test-out/dashboard/index.html
 node scripts/screenshot.mjs "$OUT"                                  /tmp/1-board.png
-node scripts/screenshot.mjs "$OUT#p=steakhouse-financial"           /tmp/2-detail.png
-node scripts/screenshot.mjs "$OUT#category=Risk%20Curators"         /tmp/3-filtered.png
+node scripts/screenshot.mjs "$OUT#p=steakhouse-financial"           /tmp/2-detail.png 1280 800 .controls
+node scripts/screenshot.mjs "$OUT#category=Risk%20Curators"         /tmp/3-filtered.png 1280 800 .controls
 ```
 
 Batas kit (RULES/main.ts): maks 4 screenshot, masing-masing ≤ 524.288 byte.

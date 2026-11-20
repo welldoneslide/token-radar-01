@@ -59,10 +59,22 @@ const modelSrc = readFileSync('lib/model.ts', 'utf8');
 const wlNames = snap.watchlist.map((s) => s);
 const hardcoded = wlNames.filter((s) => modelSrc.includes(`'${s}'`) || modelSrc.includes(`"${s}"`));
 check('no watchlist slug hardcoded in lib/model.ts', hardcoded.length === 0, hardcoded.join(', ') || 'none');
-check('model version is radar-3', modelSrc.includes(`MODEL_VERSION = 'radar-3'`));
-check('no row rests its multiple on <3 comparators unless family (n>=5) or global (n=128)',
-  rows.every((r) => r.model.multiple_n >= 3 || r.model.multiple_source !== 'category'),
-  `${rows.filter((r) => r.model.multiple_source === 'family').length} family rows, ${rows.filter((r) => r.model.multiple_source === 'global').length} global rows`);
+check('model version is radar-4', modelSrc.includes(`MODEL_VERSION = 'radar-4'`));
+check('no row rests its multiple on <5 comparators',
+  rows.every((r) => (r.model.multiple_source === 'size' && r.model.multiple_n === 128) || (r.model.multiple_source === 'family' && r.model.multiple_n >= 5)),
+  `${rows.filter((r) => r.model.multiple_source === 'family').length} family rows, ${rows.filter((r) => r.model.multiple_source === 'size').length} size-curve rows`);
+
+// --- radar-4 fields: odds, ranges, if-it-launches, verdicts ---
+let badOdds = [];
+for (const r of rows) {
+  if (typeof r.token_odds !== 'number' || r.token_odds < 0 || r.token_odds > 1) badOdds.push(`${r.slug}: odds ${r.token_odds}`);
+  if (!(r.range_low_usd <= r.implied_value_usd && r.implied_value_usd <= r.range_high_usd)) badOdds.push(`${r.slug}: implied outside range`);
+  if (!(r.if_launches_usd >= r.implied_value_usd) || !Number.isSafeInteger(r.if_launches_usd) || r.if_launches_usd <= 0) badOdds.push(`${r.slug}: if-launches ${r.if_launches_usd}`);
+  if (!r.verdict || !['worth', 'marginal', 'skip'].includes(r.verdict.verdict) || typeof r.verdict.net_per_hour_usd !== 'number') badOdds.push(`${r.slug}: verdict ${JSON.stringify(r.verdict)}`);
+}
+check('token odds in [0,1], range holds implied, if-launches >= implied, verdict present', badOdds.length === 0, badOdds.slice(0, 5).join('; ') || `${rows.length} rows`);
+const vc = { worth: 0, marginal: 0, skip: 0 };
+for (const r of rows) vc[r.verdict.verdict]++;
 
 // --- model recompute: dashboard's impliedOf must reproduce board.json ---
 const dataJs = readFileSync(join(outDir, 'data.js'), 'utf8');
@@ -74,19 +86,64 @@ for (const r of rows) {
   if (!d || d.implied_value_usd !== r.implied_value_usd || d.rank !== r.rank) mismatch++;
 }
 check('data.js rows match board.json (rank + implied)', mismatch === 0, mismatch ? `${mismatch} mismatches` : `${rows.length} rows`);
-// recompute implied from row fields the way dashboard/app.js does
-function impliedOf(row, model) {
-  const growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null ? 0 : row.change_7d));
-  const growthMult = 1 + (growth / 100) * model.growth_weight;
-  const age = row.age_days === null ? model.unknown_age_days : row.age_days;
-  const maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  return Math.max(1, Math.round(row.tvl_usd * row.multiple * growthMult * maturity));
+check('data.js model version is radar-4', radar.model_version === 'radar-4', radar.model_version);
+// recompute implied from the fitted parameters the way dashboard/app.js does
+function impliedOf(row, radar) {
+  const sc = radar.size_curve;
+  let off = 0;
+  if (row.multiple_family) {
+    const f = (radar.family_offsets || []).find((x) => x.family === row.multiple_family);
+    if (f) off = f.offset;
+  }
+  const mult = Math.min(sc.high_clip, Math.max(sc.low_clip, Math.exp(sc.intercept + sc.slope * (Math.log(row.tvl_usd) - sc.lntvl_mean) + off)));
+  const ifLaunches = Math.max(1, Math.round(row.tvl_usd * mult));
+  const o = radar.odds;
+  const ageY = row.age_days === null ? o.unknown_age_years : Math.min(Math.max(row.age_days / 365, 0), radar.model.odds_age_cap_years);
+  const eta = o.intercept + o.age_coef * ageY + o.lntvl_coef * (Math.log(row.tvl_usd) - o.lntvl_mean);
+  const odds = Math.min(0.999, Math.max(0.001, 1 / (1 + Math.exp(-Math.min(30, Math.max(-30, eta))))));
+  return {
+    implied: Math.max(1, Math.round(ifLaunches * odds)),
+    multiple: mult,
+    ifLaunches,
+    odds,
+    rangeLow: Math.max(1, Math.round(Math.max(1, Math.round(ifLaunches * odds)) * radar.range.low_factor)),
+    rangeHigh: Math.max(1, Math.round(Math.max(1, Math.round(ifLaunches * odds)) * radar.range.high_factor)),
+  };
 }
 let recomputeBad = 0;
-for (const d of radar.rows) if (impliedOf(d, radar.model) !== d.implied_value_usd) recomputeBad++;
-check('page recompute of implied value matches board', recomputeBad === 0, recomputeBad ? `${recomputeBad} rows differ` : `${radar.rows.length} rows`);
-check('global multiple matches snapshot recompute', Math.abs(radar.global_multiple - 0.2138) < 1e-9, `global=${radar.global_multiple} (n=${radar.global_n})`);
-check('fallback rows counted', radar.fallback_rows === radar.rows.filter((r) => r.multiple_source === 'global').length, `${radar.fallback_rows} rows, ${radar.fallback_watchlist} watchlist`);
+let recomputeDetail = '';
+for (const d of radar.rows) {
+  const c = impliedOf(d, radar);
+  const rangeHigh = Math.max(c.rangeLow + 1, c.rangeHigh);
+  if (c.implied !== d.implied_value_usd || Math.abs(c.multiple - d.multiple) > 0.0001 || c.ifLaunches !== d.if_launches_usd || Math.abs(c.odds - d.token_odds) > 1e-12 || c.rangeLow !== d.range_low_usd || rangeHigh !== d.range_high_usd) {
+    recomputeBad++;
+    if (!recomputeDetail) recomputeDetail = `${d.slug}: implied ${c.implied} vs ${d.implied_value_usd}, multiple ${c.multiple} vs ${d.multiple}, if-launches ${c.ifLaunches} vs ${d.if_launches_usd}, odds ${c.odds} vs ${d.token_odds}, range ${c.rangeLow}-${rangeHigh} vs ${d.range_low_usd}-${d.range_high_usd}`;
+  }
+}
+check('page recompute of implied value matches board', recomputeBad === 0, recomputeBad ? `${recomputeBad} rows differ — ${recomputeDetail}` : `${radar.rows.length} rows`);
+check('verdict counts match data.js (re-check)', vc.worth === radar.verdict_counts.worth && vc.marginal === radar.verdict_counts.marginal && vc.skip === radar.verdict_counts.skip, `worth ${vc.worth}, marginal ${vc.marginal}, skip ${vc.skip}`);
+const compRatios = snap.protocols.filter((p) => p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0).map((p) => p.mcap_usd / p.tvl_usd).sort((a, b) => a - b);
+const snapMedian = compRatios.length % 2 === 1 ? compRatios[compRatios.length >> 1] : (compRatios[(compRatios.length >> 1) - 1] + compRatios[compRatios.length >> 1]) / 2;
+check('global multiple matches snapshot recompute', Math.abs(radar.global_multiple - snapMedian) < 1e-4, `global=${radar.global_multiple} (n=${radar.global_n}, snapshot median=${snapMedian.toFixed(6)})`);
+const familyN = { curator: 0, staking: 0 };
+for (const p of snap.protocols) {
+  if (!(p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)) continue;
+  if (['Risk Curators', 'Onchain Capital Allocator', 'Yield Aggregator', 'Yield'].includes(p.category)) familyN.curator++;
+  if (['Staking', 'Restaking', 'Staking Pool', 'Liquid Staking'].includes(p.category)) familyN.staking++;
+}
+check('family offset comparator counts match snapshot', radar.family_offsets.every((f) => f.n === familyN[f.family]), radar.family_offsets.map((f) => `${f.family} n=${f.n} (snapshot ${familyN[f.family]})`).join(', '));
+const acctTotal = radar.accounting.reduce((a, g) => a + g.count, 0);
+check('protocol accounting sums to 758', acctTotal === 758 && acctTotal === snap.protocols.length, `${acctTotal} = ${radar.accounting.map((g) => `${g.label} ${g.count}`).join(' + ')}`);
+const valueKept = radar.value_terms.filter((t) => t.kept).map((t) => t.term);
+const oddsKept = radar.odds_terms.filter((t) => t.kept).map((t) => t.term);
+check('held-out table keeps exactly size curve + family offsets (value) and age + ln TVL (odds)',
+  valueKept.length === 2 && valueKept.includes('+ size curve, ln TVL') && valueKept.includes('+ family offsets') && oddsKept.length === 1 && oddsKept[0] === 'Age + ln TVL',
+  `value kept: ${valueKept.join('; ')}; odds kept: ${oddsKept.join('; ')}`);
+const oddsKeptRow = radar.odds_terms.find((t) => t.kept);
+check('odds KPI matches the held-out table', oddsKeptRow && radar.odds.brier_loo === oddsKeptRow.loo_miss && radar.odds.brier_wf === oddsKeptRow.wf_miss && radar.odds.brier_wf_med === oddsKeptRow.wf2_miss, `brier LOO ${radar.odds.brier_loo}, WF ${radar.odds.brier_wf}/${radar.odds.brier_wf_med}`);
+const familyTerm = radar.value_terms.find((t) => t.term === '+ family offsets');
+check('range calibration covers ~50% held out', Math.abs(radar.range.coverage_loo - radar.range.stated_coverage) < 0.05, `coverage ${radar.range.coverage_loo} vs stated ${radar.range.stated_coverage}`);
+check('family term beats flat in all three tests', familyTerm && familyTerm.loo_miss < radar.value_terms[0].loo_miss && familyTerm.wf_miss < radar.value_terms[0].wf_miss && familyTerm.wf2_miss < radar.value_terms[0].wf2_miss, `family LOO ${familyTerm?.loo_miss} / WF ${familyTerm?.wf_miss} / ${familyTerm?.wf2_miss} vs flat ${radar.value_terms[0].loo_miss} / ${radar.value_terms[0].wf_miss} / ${radar.value_terms[0].wf2_miss}`);
 
 // --- dashboard: size + no network ---
 const dashFiles = readdirSync(join(outDir, 'dashboard')).filter((f) => statSync(join(outDir, 'dashboard', f)).isFile());

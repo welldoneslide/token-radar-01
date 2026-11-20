@@ -1,19 +1,21 @@
 // Screenshot helper for token-radar-01.
 // Usage:
-//   node scripts/screenshot.mjs <url-or-file-path> <output.png> [width] [height]
+//   node scripts/screenshot.mjs <url-or-file-path> <output.png> [width] [height] [scroll-selector]
 // Examples (run from the repo root, after the dashboard is built to <out>/):
 //   node scripts/screenshot.mjs file://$PWD/../radar-out/dashboard/index.html screenshots/1-board.png
-//   node scripts/screenshot.mjs "file://$PWD/../radar-out/dashboard/index.html#p=steakhouse-financial" screenshots/2-detail.png
-//   node scripts/screenshot.mjs "file://$PWD/../radar-out/dashboard/index.html#category=Risk%20Curators" screenshots/3-filtered.png
+//   node scripts/screenshot.mjs "file://$PWD/../radar-out/dashboard/index.html#p=steakhouse-financial" screenshots/2-detail.png 1280 800 .controls
+//   node scripts/screenshot.mjs "file://$PWD/../radar-out/dashboard/index.html#category=Risk%20Curators" screenshots/3-filtered.png 1280 800 .controls
 // The dashboard reads its state from the URL hash: #p=<slug> opens a detail
-// drawer, #q=<text> searches, #category=<name> filters by category.
+// drawer, #q=<text> searches, #category=<name> filters by category. The optional
+// scroll selector scrolls that element into view before the shot, so a filtered
+// or detail view shows the board it acts on instead of the page top.
 // Requires Chromium for Testing r1255 installed for Playwright (see SCREENSHOT.md).
 // Env: CHROME_PATH overrides the browser binary (default: Playwright's cache).
 import { chromium } from 'playwright';
 
-const [url, out, w = '1280', h = '800'] = process.argv.slice(2);
+const [url, out, w = '1280', h = '800', scrollSelector] = process.argv.slice(2);
 if (!url || !out) {
-  console.error('usage: node scripts/screenshot.mjs <url> <output.png> [width] [height]');
+  console.error('usage: node scripts/screenshot.mjs <url> <output.png> [width] [height] [scroll-selector]');
   process.exit(2);
 }
 const browser = await chromium.launch({
@@ -23,6 +25,13 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: +w, height: +h } });
 await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
 await page.waitForTimeout(1500);
+if (scrollSelector) {
+  await page.evaluate((sel) => {
+    const node = document.querySelector(sel);
+    if (node) node.scrollIntoView({ block: 'start' });
+  }, scrollSelector);
+  await page.waitForTimeout(300);
+}
 await page.screenshot({ path: out });
 await browser.close();
 console.log('OK', out);
