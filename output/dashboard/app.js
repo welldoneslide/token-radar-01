@@ -28,8 +28,11 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
-  // The multiple is the row's own: its category median when n >= 3 comparators back it, else the
-  // global median. Both are computed from the snapshot by main.ts, never typed in here.
+  // The multiple is the row's own: its category median when n >= 3 comparators back it, else its
+  // family's median when the family has n >= 5, else the global median. A thin category's own
+  // median is never used: one or two observations is an anecdote, not an estimate. Both are
+  // computed from the snapshot by main.ts, never typed in here.
+  var FAMILY_LABELS = { curator: 'Curator family', staking: 'Staking family' };
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
@@ -189,7 +192,7 @@
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Rows on the global fallback multiple' }), el('b', { text: DATA.fallback_rows + ' of ' + DATA.board_size + ' (' + DATA.fallback_watchlist + ' watchlist)' }))
+        el('div', { class: 'fact' }, el('span', { text: 'Rows valued from category or family evidence' }), el('b', { text: (DATA.board_size - DATA.fallback_rows) + ' of ' + DATA.board_size + ' (' + (DATA.watchlist_size - DATA.fallback_watchlist) + ' watchlist)' }))
       )
     );
   }
@@ -255,14 +258,14 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, el('span', { class: 'status', text: 'no token' }), r.multiple_source === 'global' ? el('span', { class: 'tag fallback', text: 'global multiple' }) : null)
+        el('td', null, el('span', { class: 'status', text: 'no token' }), r.multiple_source === 'global' ? el('span', { class: 'tag fallback', text: 'global multiple' }) : r.multiple_source === 'family' ? el('span', { class: 'tag family', text: (FAMILY_LABELS[r.multiple_family] || 'family') + ' median' }) : null)
       );
       tbody.appendChild(tr);
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. "Global multiple" marks a row whose category had fewer than 3 token-bearing comparators, so it uses the global median instead of a category median. Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. The multiple is the median market-cap / TVL of token-bearing protocols in the same category; a thin category uses its family median instead (see "How implied value is computed"), and only a category with no family evidence uses the global median. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -302,6 +305,11 @@
     );
   }
 
+  function familyMultiple(label) {
+    var f = (DATA.families || []).filter(function (m) { return m.category === label; })[0];
+    return f ? f.multiple.toFixed(4) + ' (n=' + f.n + ')' : 'n/a';
+  }
+
   function multiplesTable() {
     var rows = DATA.multiples.map(function (m) {
       return el('tr', null,
@@ -310,15 +318,22 @@
         el('td', { class: 'num', text: m.multiple.toFixed(4) })
       );
     });
+    (DATA.families || []).forEach(function (m) {
+      rows.push(el('tr', null,
+        el('td', null, el('b', { text: m.category + ' (pooled categories)' })),
+        el('td', { class: 'num', text: String(m.n) }),
+        el('td', { class: 'num', text: m.multiple.toFixed(4) })
+      ));
+    });
     rows.push(el('tr', null,
-      el('td', null, el('b', { text: 'Global fallback (all categories)' })),
+      el('td', null, el('b', { text: 'Global median (all categories)' })),
       el('td', { class: 'num', text: String(DATA.global_n) }),
       el('td', { class: 'num', text: DATA.global_multiple.toFixed(4) })
     ));
     return el('div', { class: 'table-wrap multiples' },
       el('table', null,
-        el('caption', { class: 'sub', text: 'Median market-cap / TVL of token-bearing protocols, per category. A category is used only when at least 3 comparators back it; otherwise the row falls back to the global median.' }),
-        el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Comparators (n)' }), el('th', { scope: 'col', text: 'Multiple' }))),
+        el('caption', { class: 'sub', text: 'Median market-cap / TVL of token-bearing protocols, per category and per family. A category is used only when at least 3 comparators back it; a thinner category uses its family median when the family has at least 5 comparators, and only then the global median.' }),
+        el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category / family' }), el('th', { scope: 'col', text: 'Comparators (n)' }), el('th', { scope: 'col', text: 'Multiple' }))),
         el('tbody', null, rows)
       )
     );
@@ -332,7 +347,7 @@
       el('div', { class: 'formula' },
         'implied = round( tvl_usd x multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('p', { class: 'sub', text: 'The multiple is the median market-cap / TVL of token-bearing protocols in the same category, computed from this snapshot on every run. A category with fewer than 3 comparators does not get its own multiple: one or two observations is not an estimate, so those rows use the global median of ' + DATA.global_multiple.toFixed(4) + ' (n=' + DATA.global_n + '). That fallback covers ' + DATA.fallback_rows + ' of the ' + DATA.board_size + ' rows, including ' + DATA.fallback_watchlist + ' of the ' + DATA.watchlist_size + ' watchlist rows; every such row is marked "global multiple" in the board and in its detail view.' }),
+      el('p', { class: 'sub', text: 'The multiple is the median market-cap / TVL of token-bearing protocols in the same category, computed from this snapshot on every run. A category with fewer than 3 comparators does not get its own multiple: one or two observations is an anecdote, not an estimate — single comparators in this snapshot are extreme (Prediction Market n=1 at 400.2, Chain n=1 at 3.03), so using them raw would let one protocol dictate a whole rank. Instead a thin category uses its family median: the Curator family (Risk Curators, Onchain Capital Allocator, Yield Aggregator, Yield) at ' + familyMultiple('Curator family') + ' and the Staking family (Staking, Restaking, Staking Pool, Liquid Staking) at ' + familyMultiple('Staking family') + ', each the median of all its token-bearing comparators. Only a category with no family evidence uses the global median of ' + DATA.global_multiple.toFixed(4) + ' (n=' + DATA.global_n + '): that covers ' + DATA.fallback_rows + ' of the ' + DATA.board_size + ' rows, including ' + DATA.fallback_watchlist + ' of the ' + DATA.watchlist_size + ' watchlist rows; every such row is marked "global multiple" in the board and in its detail view.' }),
       multiplesTable(),
       el('p', { class: 'sub', text: 'The median is used, never the mean: the ratio distribution is extremely skewed, so a mean would let one outlier dictate a whole category. TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' }),
       el('p', { class: 'sub', text: 'What this model cannot say: the multiple is cross-sectional evidence, not a cause. The snapshot carries no fees, revenue, users or airdrop flag, so TVL is the only size proxy available, and the implied value is a model claim, not a prediction of a launch, a price or a reward.' })
@@ -361,7 +376,7 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Multiple (n)' }), el('b', { class: 'num', text: fmtMultiple(row) + (row.multiple_source === 'global' ? ' — global fallback' : ' — ' + (row.category || 'Other') + ' median') })),
+        el('div', null, el('span', { text: 'Multiple (n)' }), el('b', { class: 'num', text: fmtMultiple(row) + (row.multiple_source === 'global' ? ' — global median' : row.multiple_source === 'family' ? ' — ' + (FAMILY_LABELS[row.multiple_family] || 'family') + ' median' : ' — ' + (row.category || 'Other') + ' median') })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),

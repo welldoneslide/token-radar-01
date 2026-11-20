@@ -105,6 +105,7 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .multiples th, .multiples td { padding: var(--step-2) var(--step-3); }
 .tag { display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .tag.fallback { border-color: var(--accent); color: var(--accent); }
+.tag.family { border-color: var(--accent); color: var(--accent); }
 .empty { padding: var(--step-7) var(--step-5); text-align: center; display: grid; gap: var(--step-3); justify-items: center; }
 .empty p { color: var(--muted); }
 .button { min-height: 36px; padding: 0 var(--step-4); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
