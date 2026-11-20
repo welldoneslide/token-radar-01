@@ -161,3 +161,29 @@ dibandingkan sebagai byte, hasilnya identik (juga dibuktikan `cmp` file).
 3. **`makefun check` resmi** dari direktori kit (butuh repo + `transcripts.tar.gz`) — belum
    bisa dijalankan (belum ada bundle transkrip).
 4. Submit / repo GitHub — di luar tugas ini (akses GitHub user belum diberikan).
+
+## 9. radar-3 — family pooling (20 Nov 2026)
+
+- Alasan: grading provisional entry radar-2 = win rate 75,3471% (8 menang, 4 seri,
+  0 kalah). Kelemahan utama: 89/200 baris memakai multiple global datar 0,2138
+  (25/40 watchlist, termasuk rank 1, 2, 3, 5) — ranking digerakkan TVL x konstanta.
+- Aturan baru (`lib/model.ts`, `MODEL_VERSION = 'radar-3'`): kategori n>=3 pakai
+  median kategori; kalau tidak, median keluarga bila keluarga n>=5; kalau tidak,
+  median global. Keluarga: curator (Risk Curators, Onchain Capital Allocator,
+  Yield Aggregator, Yield) n=16 median 0,1802; staking (Staking, Restaking,
+  Staking Pool, Liquid Staking) n=13 median 0,0324. Median kategori tipis TIDAK
+  PERNAH dipakai mentah (bukti simulasi `scripts/simulate-radar3.mjs`: shrinkage
+  tanpa clip meledakkan predict-fun #146 -> #3, x468).
+- Hasil: global 89 -> 38 baris (watchlist 25 -> 8); 51 baris family; tidak satu
+  pun implied value naik; top 5 tidak berubah; Spearman 0,9636 vs radar-2.
+  Detail lengkap + angka sebelum/sesudah: `EVALUATION-v2.md`.
+- Dashboard: fakta lede jadi "162 of 200 valued from category or family evidence";
+  tag "family median" di baris keluarga; tabel multiple menampilkan baris keluarga;
+  panel model menjelaskan aturan keluarga dengan n dan median.
+- Validasi: `scripts/validate.mjs` ALL CHECKS PASSED; `scripts/regen-check.ts`
+  REGEN CHECKS PASSED; dua run `main.ts` byte-identik (deterministik).
+- Screenshot final radar-3 (1280x800, Playwright + Chrome for Testing, cara di
+  `SCREENSHOT.md`): 1-board 150.346 byte, 2-detail 183.920 byte,
+  3-filtered 155.006 byte — ketiganya dilihat dan terverifikasi.
+- Catatan: README masih menyebut "radar-2 model" (tidak diubah sesuai instruksi);
+  betulkan saat submit bila diinginkan.

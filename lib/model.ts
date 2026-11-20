@@ -6,13 +6,21 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own figures (model "radar-2"):
+// Implied value follows only from the snapshot's own figures (model "radar-3"):
 //
 //   multiple   = median(mcap_usd / tvl_usd) over token-bearing protocols of the same category
 //                (mcap_usd > 0, tvl_usd > 0, gecko_id recorded), when that category has n >= 3
-//                comparators; otherwise the global median over all such protocols.
-//                The median is used, never the mean: the ratio distribution is extremely skewed
-//                (global mean ~5.0 against a median of ~0.21), so one outlier would dictate a mean.
+//                comparators; else the median of the category's family — categories that are
+//                the same economic activity pooled together — when the family has n >= 5
+//                comparators; else the global median over all such protocols. A family is a
+//                grouping of category names, never of protocol names: the curator family
+//                (vault curators, allocators and yield) and the staking family (staking,
+//                restaking and liquid staking). One or two observations never dictate a
+//                multiple: a thin category's own median is never used raw, because single
+//                comparators in this snapshot are extreme (Prediction Market n=1 at 400.2,
+//                Chain n=1 at 3.03, Risk Curators n=1 at 2.97). The median is used, never
+//                the mean: the ratio distribution is extremely skewed (global mean ~5.0
+//                against a median of ~0.21), so one outlier would dictate a mean.
 //   growth     = clamp(change_7d, -60, 120) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
 //   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
@@ -67,10 +75,30 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
-/** How many comparators a category needs before its own median is trusted; fewer falls back global. */
+/** How many comparators a category needs before its own median is trusted; fewer falls back to family, then global. */
 export const MIN_CATEGORY_COMPARATORS = 3;
+
+/** How many comparators a family needs before its median is trusted; fewer falls back to global. */
+export const MIN_FAMILY_COMPARATORS = 5;
+
+/**
+ * Category families: categories that are the same economic activity, pooled so a thin
+ * category is valued from its family's evidence instead of the flat global median.
+ * The names are DefiLlama categories, never protocol names; the medians are computed
+ * from the snapshot on every run, like every other multiple.
+ */
+export const FAMILIES: Record<string, string[]> = {
+  curator: ['Risk Curators', 'Onchain Capital Allocator', 'Yield Aggregator', 'Yield'],
+  staking: ['Staking', 'Restaking', 'Staking Pool', 'Liquid Staking'],
+};
+
+/** A family's display name for the dashboard's multiples table and detail view. */
+export const FAMILY_LABELS: Record<string, string> = {
+  curator: 'Curator family',
+  staking: 'Staking family',
+};
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -104,7 +132,8 @@ export interface BoardRow {
   model: {
     multiple: number;
     multiple_n: number;
-    multiple_source: 'category' | 'global';
+    multiple_source: 'category' | 'family' | 'global';
+    multiple_family: string | null;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -128,7 +157,8 @@ export interface RadarRow {
   implied_value_usd: number;
   multiple: number;
   multiple_n: number;
-  multiple_source: 'category' | 'global';
+  multiple_source: 'category' | 'family' | 'global';
+  multiple_family: string | null;
   growth_multiplier: number;
   maturity_multiplier: number;
 }
@@ -165,6 +195,7 @@ export interface RadarData {
   global_multiple: number;
   global_n: number;
   multiples: CategoryMultiple[];
+  families: CategoryMultiple[];
   fallback_rows: number;
   fallback_watchlist: number;
   rows: RadarRow[];
@@ -209,11 +240,12 @@ export function isComparator(p: SnapshotProtocol): boolean {
   return p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0;
 }
 
-/** The valuation evidence the snapshot itself carries: the global median and one median per category. */
+/** The valuation evidence the snapshot itself carries: the global median, one median per category, and one median per family. */
 export interface MultipleStats {
   globalMultiple: number;
   globalN: number;
   byCategory: Map<string, { multiple: number; n: number }>;
+  byFamily: Map<string, { multiple: number; n: number }>;
 }
 
 /** Compute every multiple from the snapshot: no multiple is a constant carried in from outside. */
@@ -227,20 +259,46 @@ export function computeMultiples(snapshot: Snapshot): MultipleStats {
     else list.push(p.mcap_usd! / p.tvl_usd);
   }
   const globalMultiple = round4(median(comparators.map((p) => p.mcap_usd! / p.tvl_usd)));
-  const stats: MultipleStats = { globalMultiple, globalN: comparators.length, byCategory: new Map() };
+  const stats: MultipleStats = { globalMultiple, globalN: comparators.length, byCategory: new Map(), byFamily: new Map() };
   for (const [category, ratios] of byCategory) {
     stats.byCategory.set(category, { multiple: round4(median(ratios)), n: ratios.length });
+  }
+  for (const [family, members] of Object.entries(FAMILIES)) {
+    const set = new Set(members);
+    const ratios = comparators.filter((p) => set.has(p.category ?? '')).map((p) => p.mcap_usd! / p.tvl_usd);
+    if (ratios.length > 0) stats.byFamily.set(family, { multiple: round4(median(ratios)), n: ratios.length });
   }
   return stats;
 }
 
-/** The multiple one category gets: its own median when n >= 3 comparators back it, else the global one. */
-export function multipleFor(category: string | null, stats: MultipleStats): { multiple: number; n: number; source: 'category' | 'global' } {
+/** The family a category belongs to, or null: a category's family is decided by its name alone. */
+export function familyFor(category: string | null): string | null {
+  if (category === null) return null;
+  for (const [family, members] of Object.entries(FAMILIES)) {
+    if (members.includes(category)) return family;
+  }
+  return null;
+}
+
+/**
+ * The multiple one category gets: its own median when n >= 3 comparators back it;
+ * else its family's median when the family has n >= 5 comparators; else the global one.
+ * A thin category's own median is never used: with one or two observations it is an
+ * anecdote, not an estimate.
+ */
+export function multipleFor(category: string | null, stats: MultipleStats): { multiple: number; n: number; source: 'category' | 'family' | 'global'; family: string | null } {
   const entry = category === null ? undefined : stats.byCategory.get(category);
   if (entry !== undefined && entry.n >= MIN_CATEGORY_COMPARATORS) {
-    return { multiple: entry.multiple, n: entry.n, source: 'category' };
+    return { multiple: entry.multiple, n: entry.n, source: 'category', family: null };
   }
-  return { multiple: stats.globalMultiple, n: stats.globalN, source: 'global' };
+  const family = familyFor(category);
+  if (family !== null) {
+    const fam = stats.byFamily.get(family);
+    if (fam !== undefined && fam.n >= MIN_FAMILY_COMPARATORS) {
+      return { multiple: fam.multiple, n: fam.n, source: 'family', family };
+    }
+  }
+  return { multiple: stats.globalMultiple, n: stats.globalN, source: 'global', family: null };
 }
 
 /** The three multipliers and the implied value one protocol gets under `model` and `stats`. */
@@ -249,16 +307,16 @@ export function impliedValue(
   asOf: string,
   model: ModelConstants,
   stats: MultipleStats,
-): { implied: number; multiple: number; multipleN: number; multipleSource: 'category' | 'global'; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+): { implied: number; multiple: number; multipleN: number; multipleSource: 'category' | 'family' | 'global'; multipleFamily: string | null; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, n, source } = multipleFor(protocol.category, stats);
+  const { multiple, n, source, family } = multipleFor(protocol.category, stats);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult));
-  return { implied, multiple, multipleN: n, multipleSource: source, growthPct, growthMult, maturityMult, age };
+  return { implied, multiple, multipleN: n, multipleSource: source, multipleFamily: family, growthPct, growthMult, maturityMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -330,6 +388,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       multiple: s.multiple,
       multiple_n: s.multipleN,
       multiple_source: s.multipleSource,
+      multiple_family: s.multipleFamily,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -475,6 +534,7 @@ export function radarRow(row: BoardRow): RadarRow {
     multiple: row.model.multiple,
     multiple_n: row.model.multiple_n,
     multiple_source: row.model.multiple_source,
+    multiple_family: row.model.multiple_family,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
   };
@@ -489,6 +549,10 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const multiples: CategoryMultiple[] = [...stats.byCategory.entries()]
     .filter(([, v]) => v.n >= MIN_CATEGORY_COMPARATORS)
     .map(([category, v]) => ({ category, n: v.n, multiple: v.multiple }))
+    .sort((a, b) => b.n - a.n || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
+  const families: CategoryMultiple[] = [...stats.byFamily.entries()]
+    .filter(([, v]) => v.n >= MIN_FAMILY_COMPARATORS)
+    .map(([family, v]) => ({ category: FAMILY_LABELS[family] ?? family, n: v.n, multiple: v.multiple }))
     .sort((a, b) => b.n - a.n || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
   const fallbackRows = board.filter((r) => r.model.multiple_source === 'global').length;
   const fallbackWatchlist = board.filter((r) => r.model.multiple_source === 'global' && snapshot.watchlist.includes(r.slug)).length;
@@ -505,6 +569,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     global_multiple: stats.globalMultiple,
     global_n: stats.globalN,
     multiples,
+    families,
     fallback_rows: fallbackRows,
     fallback_watchlist: fallbackWatchlist,
     rows: board.map(radarRow),

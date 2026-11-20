@@ -59,7 +59,10 @@ const modelSrc = readFileSync('lib/model.ts', 'utf8');
 const wlNames = snap.watchlist.map((s) => s);
 const hardcoded = wlNames.filter((s) => modelSrc.includes(`'${s}'`) || modelSrc.includes(`"${s}"`));
 check('no watchlist slug hardcoded in lib/model.ts', hardcoded.length === 0, hardcoded.join(', ') || 'none');
-check('model version is radar-2', modelSrc.includes(`MODEL_VERSION = 'radar-2'`));
+check('model version is radar-3', modelSrc.includes(`MODEL_VERSION = 'radar-3'`));
+check('no row rests its multiple on <3 comparators unless family (n>=5) or global (n=128)',
+  rows.every((r) => r.model.multiple_n >= 3 || r.model.multiple_source !== 'category'),
+  `${rows.filter((r) => r.model.multiple_source === 'family').length} family rows, ${rows.filter((r) => r.model.multiple_source === 'global').length} global rows`);
 
 // --- model recompute: dashboard's impliedOf must reproduce board.json ---
 const dataJs = readFileSync(join(outDir, 'data.js'), 'utf8');
